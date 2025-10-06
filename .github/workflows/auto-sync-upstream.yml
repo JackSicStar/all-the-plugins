@@ -2,26 +2,30 @@ name: Auto-sync fork with upstream
 
 on:
   schedule:
-    - cron: "*/60 * * * *"   # co godzinę (zmień jak chcesz)
-  workflow_dispatch: {}       # możesz też odpalić ręcznie z Actions
+    - cron: "0 */12 * * *"      # co 12 godzin (00:00 i 12:00 UTC)
+  workflow_dispatch: {}
 
 permissions:
   contents: write
   pull-requests: write
 
 env:
-  UPSTREAM_REPO: xMasterX/all-the-plugins   # <— ustaw źródło, z którego chcesz się syncować
-  SYNC_BRANCH: dev                          # <— którą gałąź synchronizujemy (u Ciebie dev)
+  UPSTREAM_REPO: xMasterX/all-the-plugins   # skąd ciągniemy
+  SYNC_BRANCH: dev                          # co synchronizujemy
+  PR_BRANCH: sync/upstream-dev              # nazwa gałęzi do PR-a
 
 jobs:
   fast_forward:
     runs-on: ubuntu-latest
+    outputs:
+      ff_changed: ${{ steps.ff.outputs.changed }}
     steps:
       - name: Checkout fork
         uses: actions/checkout@v4
         with:
           ref: ${{ env.SYNC_BRANCH }}
           fetch-depth: 0
+          token: ${{ secrets.PAT_SYNC }}   # <<< UŻYJ swojego PAT (repo + workflow)
 
       - name: Add upstream & fetch
         run: |
@@ -31,13 +35,11 @@ jobs:
       - name: Try fast-forward merge
         id: ff
         run: |
-          # jeśli mamy czysty fast-forward, zrobimy go i wypchniemy
           set -e
-          git merge --ff-only upstream/${{ env.SYNC_BRANCH }} || echo "FF-NO"
-          if git diff --quiet HEAD..; then
-            echo "changed=false" >> $GITHUB_OUTPUT
-          else
+          if git merge --ff-only upstream/${{ env.SYNC_BRANCH }}; then
             echo "changed=true" >> $GITHUB_OUTPUT
+          else
+            echo "changed=false" >> $GITHUB_OUTPUT
           fi
 
       - name: Push (if updated)
@@ -48,9 +50,8 @@ jobs:
           git push origin ${{ env.SYNC_BRANCH }}
 
   open_pr_if_conflicts:
-    # uruchom gdy nie poszło FF (czyli poprzedni job nie wypchnął zmian)
     needs: fast_forward
-    if: needs.fast_forward.result == 'success' && needs.fast_forward.outputs.changed != 'true'
+    if: needs.fast_forward.outputs.ff_changed != 'true'   # jeśli FF się nie udał
     runs-on: ubuntu-latest
     steps:
       - name: Checkout fork
@@ -58,24 +59,29 @@ jobs:
         with:
           ref: ${{ env.SYNC_BRANCH }}
           fetch-depth: 0
+          token: ${{ secrets.PAT_SYNC }}
 
       - name: Add upstream & fetch
         run: |
           git remote add upstream https://github.com/${{ env.UPSTREAM_REPO }}.git
           git fetch upstream ${{ env.SYNC_BRANCH }}
 
-      - name: Create update branch
+      # KLUCZ: utwórz PR-ową gałąź z upstream/dev i wypchnij ją,
+      # żeby 'origin/sync/upstream-dev' istniał.
+      - name: Create and push PR branch from upstream
         run: |
           set -e
-          git checkout -B sync/upstream-${{ env.SYNC_BRANCH }}
-          git merge --no-commit upstream/${{ env.SYNC_BRANCH }} || true
+          git checkout -B ${{ env.PR_BRANCH }} upstream/${{ env.SYNC_BRANCH }}
+          git push -f origin ${{ env.PR_BRANCH }}
 
-      - name: Create PR (when merge not fast-forward)
+      - name: Create PR (fork <- upstream)
         uses: peter-evans/create-pull-request@v6
         with:
-          commit-message: "Sync with upstream/${{ env.SYNC_BRANCH }}"
-          title: "Sync: upstream → fork (${% raw %}{{ env.SYNC_BRANCH }}{% endraw %})"
+          token: ${{ secrets.PAT_SYNC }}
+          title: "Sync: upstream → fork (${{ env.SYNC_BRANCH }})"
           body: "Automatyczny PR: zmiany z `${{ env.UPSTREAM_REPO }}` gałąź `${{ env.SYNC_BRANCH }}`."
-          branch: sync/upstream-${{ env.SYNC_BRANCH }}
           base: ${{ env.SYNC_BRANCH }}
+          branch: ${{ env.PR_BRANCH }}
+          commit-message: "Sync with upstream/${{ env.SYNC_BRANCH }}"
           labels: auto-sync
+          delete-branch: true
