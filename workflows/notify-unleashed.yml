@@ -1,0 +1,25 @@
+name: Notify unleashed-firmware sync
+
+on:
+  push:
+    branches: [ dev ]
+    paths:
+      - "apps_source_code/**"
+      - "base_pack/**"
+      - "non_catalog_apps/**"
+  workflow_dispatch: {}
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send repository_dispatch to unleashed-firmware
+        env:
+          GH_TOKEN: ${{ secrets.UF_SYNC_TOKEN }}
+        run: |
+          set -euo pipefail
+          curl -sS -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            https://api.github.com/repos/JackSicStar/unleashed-firmware/dispatches \
+            -d '{"event_type":"sync-plugins","client_payload":{"source":"all-the-plugins","branch":"dev"}}'
