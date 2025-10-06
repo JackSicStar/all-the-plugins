@@ -2,7 +2,7 @@ name: Auto-sync fork with upstream
 
 on:
   schedule:
-    - cron: "0 */12 * * *"      # co 12 godzin (00:00 i 12:00 UTC)
+    - cron: "0 */12 * * *"     # co 12 godzin (00:00 i 12:00 UTC)
   workflow_dispatch: {}
 
 permissions:
@@ -10,22 +10,24 @@ permissions:
   pull-requests: write
 
 env:
-  UPSTREAM_REPO: xMasterX/all-the-plugins   # skąd ciągniemy
-  SYNC_BRANCH: dev                          # co synchronizujemy
-  PR_BRANCH: sync/upstream-dev              # nazwa gałęzi do PR-a
+  UPSTREAM_REPO: xMasterX/all-the-plugins  # skąd ciągniemy
+  SYNC_BRANCH: dev                         # którą gałąź synchronizujemy
+  PR_BRANCH: sync/upstream-dev             # gałąź, z której utworzymy PR
 
 jobs:
   fast_forward:
     runs-on: ubuntu-latest
     outputs:
-      ff_changed: ${{ steps.ff.outputs.changed }}
+      status:  ${{ steps.ff.outputs.status }}
+      changed: ${{ steps.ff.outputs.changed }}
     steps:
-      - name: Checkout fork
+      - name: Checkout fork (default GITHUB_TOKEN)
         uses: actions/checkout@v4
         with:
           ref: ${{ env.SYNC_BRANCH }}
           fetch-depth: 0
-          token: ${{ secrets.PAT_SYNC }}   # <<< UŻYJ swojego PAT (repo + workflow)
+          # UWAGA: nie podawaj "token:" z pustą wartością, bo checkout wyrzuci błąd.
+          # Domyślnie użyje ${{ github.token }}.
 
       - name: Add upstream & fetch
         run: |
@@ -36,38 +38,46 @@ jobs:
         id: ff
         run: |
           set -e
+          # spróbuj czystego fast-forward
           if git merge --ff-only upstream/${{ env.SYNC_BRANCH }}; then
-            echo "changed=true" >> $GITHUB_OUTPUT
+            echo "status=success" >> $GITHUB_OUTPUT
+            # sprawdź czy HEAD różni się od origin/SYNC_BRANCH
+            if git diff --quiet origin/${{ env.SYNC_BRANCH }}..HEAD; then
+              echo "changed=false" >> $GITHUB_OUTPUT
+            else
+              echo "changed=true"  >> $GITHUB_OUTPUT
+            fi
           else
-            echo "changed=false" >> $GITHUB_OUTPUT
+            echo "status=fail"    >> $GITHUB_OUTPUT
+            echo "changed=false"  >> $GITHUB_OUTPUT
           fi
 
-      - name: Push (if updated)
-        if: steps.ff.outputs.changed == 'true'
+      - name: Push (if FF succeeded and there are changes)
+        if: steps.ff.outputs.status == 'success' && steps.ff.outputs.changed == 'true'
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git push origin ${{ env.SYNC_BRANCH }}
 
   open_pr_if_conflicts:
+    # Odpal, gdy FF się nie udał
     needs: fast_forward
-    if: needs.fast_forward.outputs.ff_changed != 'true'   # jeśli FF się nie udał
+    if: needs.fast_forward.outputs.status == 'fail'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout fork
+      - name: Checkout fork (base branch)
         uses: actions/checkout@v4
         with:
           ref: ${{ env.SYNC_BRANCH }}
           fetch-depth: 0
-          token: ${{ secrets.PAT_SYNC }}
 
       - name: Add upstream & fetch
         run: |
           git remote add upstream https://github.com/${{ env.UPSTREAM_REPO }}.git
           git fetch upstream ${{ env.SYNC_BRANCH }}
 
-      # KLUCZ: utwórz PR-ową gałąź z upstream/dev i wypchnij ją,
-      # żeby 'origin/sync/upstream-dev' istniał.
+      # Stwórz PR-ową gałąź BEZPOŚREDNIO z upstream/dev i wypchnij ją,
+      # żeby 'origin/PR_BRANCH' istniał w Twoim repo
       - name: Create and push PR branch from upstream
         run: |
           set -e
@@ -77,10 +87,12 @@ jobs:
       - name: Create PR (fork <- upstream)
         uses: peter-evans/create-pull-request@v6
         with:
-          token: ${{ secrets.PAT_SYNC }}
+          # create-pull-request domyślnie użyje ${{ github.token }},
+          # ale podamy jawnie dla czytelności:
+          token: ${{ github.token }}
           title: "Sync: upstream → fork (${{ env.SYNC_BRANCH }})"
-          body: "Automatyczny PR: zmiany z `${{ env.UPSTREAM_REPO }}` gałąź `${{ env.SYNC_BRANCH }}`."
-          base: ${{ env.SYNC_BRANCH }}
+          body:  "Automatyczny PR: zmiany z `${{ env.UPSTREAM_REPO }}` gałąź `${{ env.SYNC_BRANCH }}`."
+          base:  ${{ env.SYNC_BRANCH }}
           branch: ${{ env.PR_BRANCH }}
           commit-message: "Sync with upstream/${{ env.SYNC_BRANCH }}"
           labels: auto-sync
