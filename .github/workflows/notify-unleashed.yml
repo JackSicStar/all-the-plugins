@@ -15,7 +15,7 @@ jobs:
     steps:
       - name: Send repository_dispatch
         env:
-          GH_TOKEN: ${{ secrets.UF_SYNC_TOKEN }}   # PAT: repo + workflow
+          GH_TOKEN: ${{ secrets.UF_SYNC_TOKEN }}   # PAT: scopes repo + workflow
         run: |
           curl -sS -X POST \
             -H "Accept: application/vnd.github+json" \
